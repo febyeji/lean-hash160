@@ -1,21 +1,27 @@
-import Init.Data.ByteArray
+import LeanHash160.Internal
 
 /-!
-Pure Lean implementation of SHA-256 (FIPS 180-4).
-
-Adapted from `powdr-labs/evm-semantics` commit
-`601183cb2d959748243d59093c144652a6f10716`, Apache-2.0.
+Pure Lean implementation of SHA-256 as specified by FIPS 180-4.
 -/
 
 namespace LeanHash160.SHA256
 
-/-- SHA-256 initial hash values from FIPS 180-4 section 5.3.3. -/
-def initialState : Array UInt32 := #[
-  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-  0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+private structure State where
+  h0 : UInt32
+  h1 : UInt32
+  h2 : UInt32
+  h3 : UInt32
+  h4 : UInt32
+  h5 : UInt32
+  h6 : UInt32
+  h7 : UInt32
 
-/-- SHA-256 round constants from FIPS 180-4 section 4.2.2. -/
-def roundConstants : Array UInt32 := #[
+private def initialState : State := {
+  h0 := 0x6a09e667, h1 := 0xbb67ae85, h2 := 0x3c6ef372, h3 := 0xa54ff53a
+  h4 := 0x510e527f, h5 := 0x9b05688c, h6 := 0x1f83d9ab, h7 := 0x5be0cd19
+}
+
+private def roundConstants : Array UInt32 := #[
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
   0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -33,117 +39,87 @@ def roundConstants : Array UInt32 := #[
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]
 
-@[inline] def rotateRight (word : UInt32) (amount : Nat) : UInt32 :=
-  (word >>> UInt32.ofNat amount) |||
-    (word <<< UInt32.ofNat (32 - amount))
-
-@[inline] def shiftRight (word : UInt32) (amount : Nat) : UInt32 :=
-  word >>> UInt32.ofNat amount
-
-@[inline] def choose (x y z : UInt32) : UInt32 :=
+@[inline] private def choose (x y z : UInt32) : UInt32 :=
   (x &&& y) ^^^ ((x ^^^ 0xffffffff) &&& z)
 
-@[inline] def majority (x y z : UInt32) : UInt32 :=
+@[inline] private def majority (x y z : UInt32) : UInt32 :=
   (x &&& y) ^^^ (x &&& z) ^^^ (y &&& z)
 
-@[inline] def bigSigma0 (x : UInt32) : UInt32 :=
-  rotateRight x 2 ^^^ rotateRight x 13 ^^^ rotateRight x 22
+@[inline] private def bigSigma0 (x : UInt32) : UInt32 :=
+  Internal.rotateRight32 x 2 ^^^ Internal.rotateRight32 x 13 ^^^
+    Internal.rotateRight32 x 22
 
-@[inline] def bigSigma1 (x : UInt32) : UInt32 :=
-  rotateRight x 6 ^^^ rotateRight x 11 ^^^ rotateRight x 25
+@[inline] private def bigSigma1 (x : UInt32) : UInt32 :=
+  Internal.rotateRight32 x 6 ^^^ Internal.rotateRight32 x 11 ^^^
+    Internal.rotateRight32 x 25
 
-@[inline] def smallSigma0 (x : UInt32) : UInt32 :=
-  rotateRight x 7 ^^^ rotateRight x 18 ^^^ shiftRight x 3
+@[inline] private def smallSigma0 (x : UInt32) : UInt32 :=
+  Internal.rotateRight32 x 7 ^^^ Internal.rotateRight32 x 18 ^^^ (x >>> 3)
 
-@[inline] def smallSigma1 (x : UInt32) : UInt32 :=
-  rotateRight x 17 ^^^ rotateRight x 19 ^^^ shiftRight x 10
+@[inline] private def smallSigma1 (x : UInt32) : UInt32 :=
+  Internal.rotateRight32 x 17 ^^^ Internal.rotateRight32 x 19 ^^^ (x >>> 10)
 
-/-- Read four bytes as a big-endian word, zero-padding past the end. -/
-def readBE32 (bytes : ByteArray) (offset : Nat) : UInt32 := Id.run do
-  let mut word : UInt32 := 0
-  for index in [0:4] do
-    let byte : UInt32 :=
-      if h : offset + index < bytes.size then
-        bytes[offset + index].toUInt32
-      else
-        0
-    word := (word <<< 8) ||| byte
-  return word
+private structure WorkingState where
+  a : UInt32
+  b : UInt32
+  c : UInt32
+  d : UInt32
+  e : UInt32
+  f : UInt32
+  g : UInt32
+  h : UInt32
 
-/-- Append one word as four big-endian bytes. -/
-def writeBE32 (output : ByteArray) (word : UInt32) : ByteArray := Id.run do
-  let mut output := output
-  for index in [0:4] do
-    let shift := UInt32.ofNat (8 * (3 - index))
-    output := output.push (((word >>> shift) &&& 0xff).toUInt8)
-  return output
+private def WorkingState.next
+    (working : WorkingState) (word constant : UInt32) : WorkingState :=
+  let t1 := working.h + bigSigma1 working.e +
+    choose working.e working.f working.g + constant + word
+  let t2 := bigSigma0 working.a + majority working.a working.b working.c
+  {
+    a := t1 + t2
+    b := working.a
+    c := working.b
+    d := working.c
+    e := working.d + t1
+    f := working.e
+    g := working.f
+    h := working.g
+  }
 
-/-- Apply the SHA-256 compression function to one 64-byte block. -/
-def compressBlock
-    (state : Array UInt32) (bytes : ByteArray) (blockOffset : Nat) :
-    Array UInt32 := Id.run do
-  let mut schedule : Array UInt32 := Array.mkArray 64 0
+private def compressBlock
+    (state : State) (bytes : ByteArray) (blockOffset : Nat) : State := Id.run do
+  let mut schedule : Array UInt32 := Array.replicate 64 0
   for round in [0:16] do
-    schedule := schedule.set! round (readBE32 bytes (blockOffset + round * 4))
+    schedule := schedule.set! round
+      (Internal.readUInt32 .big bytes (blockOffset + round * 4))
   for round in [16:64] do
     let word := smallSigma1 schedule[round - 2]! + schedule[round - 7]! +
       smallSigma0 schedule[round - 15]! + schedule[round - 16]!
     schedule := schedule.set! round word
 
-  let mut a := state[0]!
-  let mut b := state[1]!
-  let mut c := state[2]!
-  let mut d := state[3]!
-  let mut e := state[4]!
-  let mut f := state[5]!
-  let mut g := state[6]!
-  let mut h := state[7]!
-
+  let mut working : WorkingState := {
+    a := state.h0, b := state.h1, c := state.h2, d := state.h3
+    e := state.h4, f := state.h5, g := state.h6, h := state.h7
+  }
   for round in [0:64] do
-    let temporary1 := h + bigSigma1 e + choose e f g +
-      roundConstants[round]! + schedule[round]!
-    let temporary2 := bigSigma0 a + majority a b c
-    h := g
-    g := f
-    f := e
-    e := d + temporary1
-    d := c
-    c := b
-    b := a
-    a := temporary1 + temporary2
+    working := working.next schedule[round]! roundConstants[round]!
 
-  return #[
-    state[0]! + a, state[1]! + b, state[2]! + c, state[3]! + d,
-    state[4]! + e, state[5]! + f, state[6]! + g, state[7]! + h]
+  return {
+    h0 := state.h0 + working.a, h1 := state.h1 + working.b
+    h2 := state.h2 + working.c, h3 := state.h3 + working.d
+    h4 := state.h4 + working.e, h5 := state.h5 + working.f
+    h6 := state.h6 + working.g, h7 := state.h7 + working.h
+  }
+
+private def State.toBytes (state : State) : ByteArray :=
+  [state.h0, state.h1, state.h2, state.h3, state.h4, state.h5, state.h6, state.h7].foldl
+    (Internal.appendUInt32 .big) ByteArray.empty
 
 /-- Compute the 32-byte SHA-256 digest of `bytes`. -/
 def hash (bytes : ByteArray) : ByteArray := Id.run do
+  let padded := Internal.padMessage .big bytes
   let mut state := initialState
-  let fullBlocks := bytes.size / 64
-  for block in [0:fullBlocks] do
-    state := compressBlock state bytes (block * 64)
-
-  let remainderOffset := fullBlocks * 64
-  let remainderSize := bytes.size - remainderOffset
-  let mut tail := ByteArray.empty
-  for index in [0:remainderSize] do
-    tail := tail.push bytes[remainderOffset + index]!
-  tail := tail.push 0x80
-  while tail.size % 64 ≠ 56 do
-    tail := tail.push 0
-
-  let bitLength := bytes.size * 8
-  for index in [0:8] do
-    let shift := 8 * (7 - index)
-    tail := tail.push ((bitLength >>> shift) &&& 0xff).toUInt8
-
-  let tailBlocks := tail.size / 64
-  for block in [0:tailBlocks] do
-    state := compressBlock state tail (block * 64)
-
-  let mut output := ByteArray.empty
-  for index in [0:8] do
-    output := writeBE32 output state[index]!
-  return output
+  for block in [0:padded.size / 64] do
+    state := compressBlock state padded (block * 64)
+  return state.toBytes
 
 end LeanHash160.SHA256

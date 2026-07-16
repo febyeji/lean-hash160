@@ -6,7 +6,8 @@ powdr-labs/evm-semantics commit 601183cb2d959748243d59093c144652a6f10716:
 
   https://github.com/powdr-labs/evm-semantics
 
-The source repository is licensed under Apache License 2.0. The adapted
-implementations remain under the same license. Changes include Lean 4.16
-compatibility, standalone package namespacing, a HASH160 composition API, and
-standalone test vectors.
+The source repository is licensed under Apache License 2.0. The derived work
+remains under the same license. The implementation has been restructured into
+standalone padding, encoding, state, and compression components, with a
+HASH160 composition API and independent boundary test vectors. It does not
+depend on or expose modules from the upstream repository.
